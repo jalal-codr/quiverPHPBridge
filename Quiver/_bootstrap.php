@@ -3,7 +3,7 @@ error_reporting(E_ERROR | E_PARSE);
 ini_set('display_errors', 0);
 
 function quiver_bootstrap($json = true) {
-    global $CFG, $R_HOST, $R_USER, $R_PASS, $W_HOST, $W_USER, $W_PASS, $DB_NAME;
+    global $CFG, $INFO, $R_HOST, $R_USER, $R_PASS, $W_HOST, $W_USER, $W_PASS, $DB_NAME;
     if ($json) {
         header('Content-Type: application/json');
     }

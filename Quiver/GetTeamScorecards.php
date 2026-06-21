@@ -6,7 +6,11 @@
  * {
  *   "toId": 123,
  *   "events": ["RMT", "CWT"],
+ *   "phases": [16, 8, 4, 2, 1, 0],
  *   "includeEmpty": true,
+ *   "scoreFilled": false,
+ *   "includeAllNames": false,
+ *   "scoreFlags": true,
  *   "scoreBarcode": true,
  *   "scoreKeeperQr": true
  * }
@@ -74,8 +78,21 @@ if (count($cleanEvents) === 0) {
 
 $_REQUEST = [];
 $_REQUEST['Event'] = $cleanEvents;
+$phases = clean_phase_list($input['phases'] ?? []);
+if (count($phases) > 0) {
+    $_REQUEST['Phase'] = $phases;
+}
 if (!empty($input['includeEmpty'])) {
     $_REQUEST['IncEmpty'] = 1;
+}
+if (!empty($input['scoreFilled'])) {
+    $_REQUEST['ScoreFilled'] = 1;
+}
+if (!empty($input['includeAllNames'])) {
+    $_REQUEST['IncAllNames'] = 1;
+}
+if (!empty($input['scoreFlags'])) {
+    $_REQUEST['ScoreFlags'] = 1;
 }
 if (!isset($input['scoreBarcode']) || !empty($input['scoreBarcode'])) {
     $_REQUEST['Barcode'] = 1;
@@ -83,10 +100,16 @@ if (!isset($input['scoreBarcode']) || !empty($input['scoreBarcode'])) {
 if (!isset($input['scoreKeeperQr']) || !empty($input['scoreKeeperQr'])) {
     $_REQUEST['QRCode'] = ['ISK-NG'];
 }
+if (!empty($input['scoreQrPersonal'])) {
+    $_REQUEST['ScoreQrPersonal'] = 1;
+}
+if (!isset($input['teamComponents']) || !empty($input['teamComponents'])) {
+    $_REQUEST['TeamComponents'] = 1;
+}
 
 ob_start();
 try {
-    include($CFG->DOCUMENT_PATH . 'Final/Team/PDFScore.php');
+    include($CFG->DOCUMENT_PATH . 'Final/Team/PDFScoreMatch.php');
 } catch (Throwable $e) {
     ob_end_clean();
     http_response_code(500);
@@ -109,4 +132,19 @@ header('Content-Disposition: inline; filename="' . $filename . '"');
 header('Cache-Control: no-store');
 echo $pdf;
 exit;
+
+function clean_phase_list($items) {
+    if (!is_array($items)) $items = [$items];
+    $clean = [];
+    foreach ($items as $item) {
+        $phase = intval($item);
+        if (in_array($phase, [0, 1, 2, 4, 8, 16, 24, 32, 48, 64], true)) {
+            if ($phase === 24) $phase = 32;
+            if ($phase === 48) $phase = 64;
+            $clean[$phase] = $phase;
+        }
+    }
+    krsort($clean, SORT_NUMERIC);
+    return array_values($clean);
+}
 ?>

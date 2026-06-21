@@ -6,8 +6,9 @@ require_once(__DIR__ . '/_bootstrap.php');
 quiver_bootstrap(false);
 require_once($CFG->DOCUMENT_PATH . 'Common/Lib/Fun_Export.php');
 
-$toId = intval($_GET['toId'] ?? $_POST['toId'] ?? 0);
-$complete = intval($_GET['complete'] ?? $_POST['complete'] ?? 0);
+$input = quiver_input();
+$toId = intval($_GET['toId'] ?? $input['toId'] ?? 0);
+$complete = intval($_GET['complete'] ?? $input['complete'] ?? 0);
 if (!$toId) {
     header('Content-Type: application/json');
     quiver_error(400, 'Missing or invalid toId');
@@ -24,10 +25,16 @@ if (!function_exists('export_tournament')) {
     quiver_error(500, 'Ianseo export function is unavailable');
 }
 
-$payload = export_tournament($toId, (bool)$complete);
-if (!$payload) {
+$gara = export_tournament($toId, (bool)$complete);
+if (!$gara || !is_array($gara)) {
     header('Content-Type: application/json');
     quiver_error(500, 'Ianseo could not export this tournament');
+}
+
+$payload = gzcompress(serialize($gara), 9);
+if ($payload === false) {
+    header('Content-Type: application/json');
+    quiver_error(500, 'Ianseo could not package this tournament export');
 }
 
 $filename = preg_replace('/[^A-Za-z0-9_.-]+/', '_', $row->ToCode) . '.ianseo';

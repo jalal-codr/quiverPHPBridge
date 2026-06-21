@@ -24,8 +24,11 @@ foreach ($individual as $event) {
     $qualified = max(0, intval($event['qualified'] ?? 0));
     $firstPhase = max(0, intval($event['firstPhase'] ?? 0));
     $matchMode = ($event['matchMode'] ?? 'set') === 'cumulative' ? 0 : 1;
-    safe_w_sql("INSERT INTO Events (EvTournament, EvCode, EvEventName, EvTeamEvent, EvFinalFirstPhase, EvMatchMode, EvNumQualified)
-        VALUES ($toId, " . StrSafe_DB($code) . ", " . StrSafe_DB($name) . ", 0, $firstPhase, $matchMode, $qualified)");
+    $finEnds = $matchMode ? 5 : 5;
+    $finArrows = 3;
+    $finSo = 1;
+    safe_w_sql("INSERT INTO Events (EvTournament, EvCode, EvEventName, EvTeamEvent, EvFinalFirstPhase, EvMatchMode, EvNumQualified, EvMatchArrowsNo, EvFinEnds, EvFinArrows, EvFinSO)
+        VALUES ($toId, " . StrSafe_DB($code) . ", " . StrSafe_DB($name) . ", 0, $firstPhase, $matchMode, $qualified, 0, $finEnds, $finArrows, $finSo)");
     $eventCount++;
     foreach ($cats as $cat) {
         $cat = clean_code($cat);
@@ -48,8 +51,11 @@ foreach ($teams as $event) {
     $teamSize = max(1, intval($event['teamSize'] ?? 3));
     $mixed = !empty($event['mixedTeam']) ? 1 : 0;
     $matchMode = ($event['matchMode'] ?? 'set') === 'cumulative' ? 0 : 1;
-    safe_w_sql("INSERT INTO Events (EvTournament, EvCode, EvEventName, EvTeamEvent, EvFinalFirstPhase, EvMatchMode, EvNumQualified, EvMaxTeamPerson, EvMixedTeam)
-        VALUES ($toId, " . StrSafe_DB($code) . ", " . StrSafe_DB($name) . ", 1, $firstPhase, $matchMode, $qualified, $teamSize, $mixed)");
+    $finEnds = $matchMode ? 4 : 4;
+    $finArrows = $mixed ? 4 : 6;
+    $finSo = $mixed ? 2 : 3;
+    safe_w_sql("INSERT INTO Events (EvTournament, EvCode, EvEventName, EvTeamEvent, EvFinalFirstPhase, EvMatchMode, EvNumQualified, EvMaxTeamPerson, EvMixedTeam, EvMatchArrowsNo, EvFinEnds, EvFinArrows, EvFinSO)
+        VALUES ($toId, " . StrSafe_DB($code) . ", " . StrSafe_DB($name) . ", 1, $firstPhase, $matchMode, $qualified, $teamSize, $mixed, 0, $finEnds, $finArrows, $finSo)");
     $teamCount++;
     foreach ($cats as $cat) {
         $cat = clean_code($cat);

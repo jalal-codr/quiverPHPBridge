@@ -221,6 +221,16 @@ if (!$enId) {
 
 safe_w_sql("INSERT INTO Qualifications (QuId) VALUES ($enId)");
 
+/* ───────────────────────── Individual event links ───────────────────────── */
+
+safe_w_sql("INSERT IGNORE INTO Individuals (IndId, IndEvent, IndTournament)
+    SELECT $enId, EcCode, $toId
+    FROM EventClass
+    WHERE EcTournament=$toId
+    AND EcTeamEvent=0
+    AND EcDivision=" . StrSafe_DB($division) . "
+    AND EcClass=" . StrSafe_DB($ianseoClass));
+
 /* ───────────────────────── DOB ───────────────────────── */
 
 if ($dob && preg_match('/^\d{4}-\d{2}-\d{2}$/', $dob)) {

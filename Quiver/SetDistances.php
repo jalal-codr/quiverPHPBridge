@@ -45,16 +45,50 @@ if (empty($input['toId']) || !is_numeric($input['toId'])) {
     exit;
 }
 
-if (empty($input['distances']) || !is_array($input['distances'])) {
+if (
+    (empty($input['distances']) || !is_array($input['distances'])) &&
+    (empty($input['divisionDistances']) || !is_array($input['divisionDistances']))
+) {
     http_response_code(400);
-    echo json_encode(['error' => 'Missing distances array']);
+    echo json_encode(['error' => 'Missing distances or divisionDistances array']);
     exit;
 }
 
 $toId          = intval($input['toId']);
-$distances     = array_values(array_unique(array_map('intval', $input['distances'])));
-sort($distances); // ascending order
-$numDist       = count($distances);
+$distanceRows = [];
+if (!empty($input['divisionDistances']) && is_array($input['divisionDistances'])) {
+    foreach ($input['divisionDistances'] as $row) {
+        $filter = trim(strval($row['filter'] ?? '%%'));
+        $labels = [];
+        foreach (($row['distances'] ?? []) as $label) {
+            $label = normalize_distance_label($label);
+            if ($label !== '') $labels[] = $label;
+        }
+        if ($filter !== '' && count($labels) > 0) {
+            $distanceRows[] = ['filter' => $filter, 'distances' => $labels];
+        }
+    }
+} else {
+    $labels = [];
+    foreach ($input['distances'] as $label) {
+        $label = normalize_distance_label($label);
+        if ($label !== '') $labels[] = $label;
+    }
+    if (count($labels) > 0) {
+        $distanceRows[] = ['filter' => '%%', 'distances' => array_values(array_unique($labels))];
+    }
+}
+
+if (count($distanceRows) === 0) {
+    http_response_code(400);
+    echo json_encode(['error' => 'No usable distance rows were provided']);
+    exit;
+}
+
+$numDist = 0;
+foreach ($distanceRows as $row) {
+    $numDist = max($numDist, count($row['distances']));
+}
 $endsPerDist   = intval($input['endsPerDistance'] ?? 10);
 $arrowsPerEnd  = intval($input['arrowsPerEnd'] ?? 3);
 
@@ -70,39 +104,43 @@ $tour = safe_fetch($q);
 // ── Step 1: Update ToNumDist on the Tournament ────────────────────────────────
 safe_w_sql("UPDATE Tournament SET ToNumDist=$numDist WHERE ToId=$toId");
 
-// ── Step 2: Get or create session 1 (default qualification session) ───────────
-$qSes = safe_r_sql("SELECT SesOrder FROM Session WHERE SesTournament=$toId AND SesType='Q' ORDER BY SesOrder LIMIT 1");
-if (safe_num_rows($qSes) > 0) {
-    $sesRow = safe_fetch($qSes);
-    $sessionOrder = intval($sesRow->SesOrder);
-} else {
-    // Create a default qualification session
+// ── Step 2: Get or create qualification sessions ─────────────────────────────
+$sessionConfig = [];
+if (!empty($input['sessionConfig']) && is_array($input['sessionConfig'])) {
+    foreach ($input['sessionConfig'] as $row) {
+        $session = max(1, intval($row['session'] ?? 1));
+        $sessionConfig[$session] = $row;
+    }
+}
+if (empty($sessionConfig)) {
+    $sessionConfig[1] = ['session' => 1];
+}
+$sessions = array_keys($sessionConfig);
+sort($sessions);
+
+foreach ($sessions as $sessionOrder) {
     safe_w_sql("INSERT INTO Session (SesTournament, SesOrder, SesType, SesName)
-        VALUES ($toId, 1, 'Q', 'Qualification')
-        ON DUPLICATE KEY UPDATE SesName='Qualification'");
-    $sessionOrder = 1;
+        VALUES ($toId, $sessionOrder, 'Q', 'Qualification')
+        ON DUPLICATE KEY UPDATE SesName=SesName");
 }
 
 // ── Step 3: Insert DistanceInformation for each distance ─────────────────────
 // DiDistance is the distance index (1, 2, 3...) not the metres value
 // The actual metres value goes into TournamentDistances as the label
-foreach ($distances as $idx => $metres) {
-    $distIndex = $idx + 1; // 1-based
-    safe_w_sql("INSERT INTO DistanceInformation
-        (DiTournament, DiSession, DiDistance, DiType, DiEnds, DiArrows, DiScoringEnds)
-        VALUES (
-            $toId,
-            $sessionOrder,
-            $distIndex,
-            'Q',
-            $endsPerDist,
-            $arrowsPerEnd,
-            $endsPerDist
-        )
-        ON DUPLICATE KEY UPDATE
-            DiEnds=$endsPerDist,
-            DiArrows=$arrowsPerEnd,
-            DiScoringEnds=$endsPerDist");
+foreach ($sessions as $sessionOrder) {
+    $cfg = $sessionConfig[$sessionOrder] ?? [];
+    $ends = intval($cfg['ends'] ?? $endsPerDist);
+    $arrows = intval($cfg['arrows'] ?? $arrowsPerEnd);
+    $scoringEnds = intval($cfg['scoringEnds'] ?? $ends);
+    for ($distIndex = 1; $distIndex <= $numDist; $distIndex++) {
+        safe_w_sql("INSERT INTO DistanceInformation
+            (DiTournament, DiSession, DiDistance, DiType, DiEnds, DiArrows, DiScoringEnds)
+            VALUES ($toId, $sessionOrder, $distIndex, 'Q', $ends, $arrows, $scoringEnds)
+            ON DUPLICATE KEY UPDATE
+                DiEnds=$ends,
+                DiArrows=$arrows,
+                DiScoringEnds=$scoringEnds");
+    }
 }
 
 // Update ToNumDist to match actual number of distances
@@ -110,25 +148,23 @@ safe_w_sql("UPDATE Tournament SET ToNumDist=$numDist WHERE ToId=$toId");
 
 // Update all ISK devices for this tournament to use correct schedule key
 // Format: Q + numDist + session
-$schedKey = 'Q' . $numDist . $sessionOrder;
+$schedKey = 'Q' . $numDist . $sessions[0];
 safe_w_sql("UPDATE IskDevices SET IskDvSchedKey=" . StrSafe_DB($schedKey) . " WHERE IskDvTournament=$toId AND IskDvProActive=1");
 
-// ── Step 4: Set TournamentDistances with wildcard %% (applies to all classes) ─
+// ── Step 4: Set TournamentDistances rows per division/class filter ───────────
 // First clear existing distance entries for this tournament
 safe_w_sql("DELETE FROM TournamentDistances WHERE TdTournament=$toId AND TdType=" . StrSafe_DB($tour->ToType));
 
-// Build the column assignments: Td1='15m', Td2='18m', etc.
-$tdCols = [];
-foreach ($distances as $idx => $metres) {
-    $distIndex = $idx + 1;
-    $tdCols[] = "Td{$distIndex}=" . StrSafe_DB("{$metres}m");
-}
-
-if (!empty($tdCols)) {
+foreach ($distanceRows as $row) {
+    $tdCols = [];
+    for ($idx = 0; $idx < $numDist; $idx++) {
+        $distIndex = $idx + 1;
+        $tdCols[] = "Td{$distIndex}=" . StrSafe_DB($row['distances'][$idx] ?? '');
+    }
     safe_w_sql("INSERT INTO TournamentDistances
         SET TdTournament=$toId,
             TdType=" . StrSafe_DB($tour->ToType) . ",
-            TdClasses='%%',
+            TdClasses=" . StrSafe_DB($row['filter']) . ",
             " . implode(', ', $tdCols) . "
         ON DUPLICATE KEY UPDATE
             " . implode(', ', $tdCols));
@@ -140,6 +176,20 @@ echo json_encode([
     'success'      => true,
     'toId'         => $toId,
     'numDistances' => $numDist,
-    'distances'    => $distances,
-    'session'      => $sessionOrder,
+    'rows'         => count($distanceRows),
+    'filters'      => array_map(function($row) { return $row['filter']; }, $distanceRows),
+    'sessions'     => $sessions,
 ]);
+
+function normalize_distance_label($value) {
+    if (is_numeric($value)) {
+        $m = intval($value);
+        return $m > 0 ? "{$m}m" : '';
+    }
+    $value = trim(strval($value));
+    if ($value === '') return '';
+    if (preg_match('/^(\d+)(?:m)?(?:-\d+)?$/i', $value, $m)) {
+        return intval($m[1]) . 'm';
+    }
+    return substr(strip_tags($value), 0, 20);
+}

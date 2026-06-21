@@ -38,6 +38,10 @@ if ($action === 'save') {
     save_pairings($toId, $input['pairings'] ?? []);
 }
 
+if ($action === 'saveGroups') {
+    save_groups($toId, $input['groups'] ?? []);
+}
+
 echo json_encode([
     'success' => true,
     'events' => load_events($toId),
@@ -90,7 +94,7 @@ function refresh_team_rankings($toId, $eventCodes) {
 function load_events($toId) {
     $events = [];
     $eventCodes = [];
-    $eventQ = safe_r_sql("SELECT EvCode, EvEventName, EvFinalFirstPhase, EvNumQualified
+    $eventQ = safe_r_sql("SELECT EvCode, EvEventName, EvFinalFirstPhase, EvNumQualified, EvMaxTeamPerson
         FROM Events
         WHERE EvTournament=" . StrSafe_DB($toId) . " AND EvTeamEvent=1
         ORDER BY EvProgr, EvCode");
@@ -101,6 +105,9 @@ function load_events($toId) {
             'name' => $event->EvEventName,
             'firstPhase' => intval($event->EvFinalFirstPhase),
             'qualified' => intval($event->EvNumQualified),
+            'teamSize' => max(1, intval($event->EvMaxTeamPerson)),
+            'athletes' => [],
+            'groups' => [],
             'teams' => [],
             'matches' => [],
         ];
@@ -129,6 +136,73 @@ function load_events($toId) {
             'code' => $team->CoCode ?? '',
             'name' => ($team->CoName ?? '') . ($subTeam > 1 ? ' (' . $subTeam . ')' : ''),
         ];
+    }
+
+    $athleteQ = safe_r_sql("SELECT DISTINCT EcCode, EnId, EnCode, EnName, EnFirstName, EnSex, EnDivision, EnClass,
+            EnCountry, CoCode, CoName, QuScore, QuGold, QuXnine, QuHits
+        FROM EventClass
+        INNER JOIN Entries ON EnTournament=EcTournament AND EnDivision=EcDivision AND EnClass=EcClass
+        LEFT JOIN Countries ON CoId=EnCountry AND CoTournament=EnTournament
+        LEFT JOIN Qualifications ON QuId=EnId
+        WHERE EcTournament=" . StrSafe_DB($toId) . " AND EcTeamEvent=1 AND EcCode IN ($quotedEvents) AND EnAthlete=1
+        ORDER BY EcCode, CoName ASC, CoCode ASC, QuScore DESC, QuGold DESC, QuXnine DESC, EnName ASC, EnFirstName ASC");
+    while ($athlete = safe_fetch($athleteQ)) {
+        if (!isset($events[$athlete->EcCode])) continue;
+        $events[$athlete->EcCode]['athletes'][] = [
+            'id' => intval($athlete->EnId),
+            'bibCode' => $athlete->EnCode ?? '',
+            'familyName' => $athlete->EnName ?? '',
+            'givenName' => $athlete->EnFirstName ?? '',
+            'gender' => intval($athlete->EnSex) === 2 ? 'F' : 'M',
+            'division' => $athlete->EnDivision ?? '',
+            'class' => $athlete->EnClass ?? '',
+            'countryId' => intval($athlete->EnCountry),
+            'countryCode' => $athlete->CoCode ?? '',
+            'countryName' => $athlete->CoName ?? '',
+            'score' => intval($athlete->QuScore ?? 0),
+            'gold' => intval($athlete->QuGold ?? 0),
+            'xnine' => intval($athlete->QuXnine ?? 0),
+            'hits' => intval($athlete->QuHits ?? 0),
+        ];
+    }
+
+    $componentQ = safe_r_sql("SELECT TeEvent, TeCoId, TeSubTeam, TeRank, TeScore, TeGold, TeXnine, TeHits,
+            CoCode, CoName, TcId, TcOrder
+        FROM Teams
+        LEFT JOIN Countries ON CoId=TeCoId AND CoTournament=TeTournament
+        LEFT JOIN TeamComponent ON TcCoId=TeCoId AND TcSubTeam=TeSubTeam AND TcEvent=TeEvent AND TcTournament=TeTournament AND TcFinEvent=TeFinEvent
+        WHERE TeTournament=" . StrSafe_DB($toId) . " AND TeFinEvent=1 AND TeEvent IN ($quotedEvents)
+        ORDER BY TeEvent, TeRank ASC, TeCoId ASC, TeSubTeam ASC, TcOrder ASC");
+    $groups = [];
+    while ($component = safe_fetch($componentQ)) {
+        if (!isset($events[$component->TeEvent])) continue;
+        $subTeam = intval($component->TeSubTeam) ?: 1;
+        $key = team_key($component->TeCoId, $subTeam);
+        $groupKey = $component->TeEvent . '|' . $key;
+        if (!isset($groups[$groupKey])) {
+            $groups[$groupKey] = [
+                'key' => $key,
+                'countryId' => intval($component->TeCoId),
+                'subTeam' => $subTeam,
+                'rank' => intval($component->TeRank),
+                'score' => intval($component->TeScore),
+                'gold' => intval($component->TeGold),
+                'xnine' => intval($component->TeXnine),
+                'hits' => intval($component->TeHits),
+                'code' => $component->CoCode ?? '',
+                'name' => ($component->CoName ?? '') . ($subTeam > 1 ? ' (' . $subTeam . ')' : ''),
+                'athleteIds' => [],
+            ];
+        }
+        if (intval($component->TcId) > 0) {
+            $groups[$groupKey]['athleteIds'][] = intval($component->TcId);
+        }
+    }
+    foreach ($groups as $groupKey => $group) {
+        [$eventCode] = explode('|', $groupKey, 2);
+        if (isset($events[$eventCode])) {
+            $events[$eventCode]['groups'][] = $group;
+        }
     }
 
     $slotQ = safe_r_sql("SELECT EvCode, EvFinalFirstPhase, GrMatchNo, GrPhase, GrPosition, TfTeam, TfSubTeam, FSLetter
@@ -166,6 +240,129 @@ function load_events($toId) {
     }
 
     return array_values($events);
+}
+
+function athlete_rows_by_id($toId, $eventCode, $countryId, $athleteIds) {
+    if (count($athleteIds) === 0) return [];
+    $ids = implode(',', array_map('intval', $athleteIds));
+    $rows = [];
+    $q = safe_r_sql("SELECT DISTINCT EnId, QuScore, QuGold, QuXnine, QuHits
+        FROM EventClass
+        INNER JOIN Entries ON EnTournament=EcTournament AND EnDivision=EcDivision AND EnClass=EcClass
+        LEFT JOIN Qualifications ON QuId=EnId
+        WHERE EcTournament=" . StrSafe_DB($toId) . "
+          AND EcTeamEvent=1
+          AND EcCode=" . StrSafe_DB($eventCode) . "
+          AND EnAthlete=1
+          AND EnCountry=" . StrSafe_DB($countryId) . "
+          AND EnId IN ($ids)");
+    while ($row = safe_fetch($q)) {
+        $rows[intval($row->EnId)] = [
+            'id' => intval($row->EnId),
+            'score' => intval($row->QuScore ?? 0),
+            'gold' => intval($row->QuGold ?? 0),
+            'xnine' => intval($row->QuXnine ?? 0),
+            'hits' => intval($row->QuHits ?? 0),
+        ];
+    }
+    return $rows;
+}
+
+function save_groups($toId, $groups) {
+    if (!is_array($groups)) {
+        fail_json('groups must be an array', 400);
+    }
+
+    $byEvent = [];
+    foreach ($groups as $group) {
+        $eventCode = clean_event_code($group['eventCode'] ?? '');
+        $countryId = intval($group['countryId'] ?? 0);
+        $subTeam = intval($group['subTeam'] ?? 1);
+        $athleteIds = is_array($group['athleteIds'] ?? null) ? array_values(array_unique(array_map('intval', $group['athleteIds']))) : [];
+        $athleteIds = array_values(array_filter($athleteIds, fn($id) => $id > 0));
+
+        if ($eventCode === '' || $countryId <= 0) {
+            fail_json('Each team group needs eventCode and countryId', 400);
+        }
+        if ($subTeam <= 0) $subTeam = 1;
+        if (count($athleteIds) === 0) continue;
+
+        $eventQ = safe_r_sql("SELECT EvCode, EvMaxTeamPerson FROM Events WHERE EvTournament=" . StrSafe_DB($toId) . " AND EvTeamEvent=1 AND EvCode=" . StrSafe_DB($eventCode));
+        if (!$event = safe_fetch($eventQ)) {
+            fail_json("Team event $eventCode not found", 422);
+        }
+        $teamSize = max(1, intval($event->EvMaxTeamPerson));
+        if (count($athleteIds) > $teamSize) {
+            fail_json("Team $eventCode has more athletes than allowed", 422);
+        }
+
+        $rowsById = athlete_rows_by_id($toId, $eventCode, $countryId, $athleteIds);
+        if (count($rowsById) !== count($athleteIds)) {
+            fail_json("One or more athletes are not eligible for $eventCode", 422);
+        }
+
+        $byEvent[$eventCode][] = [
+            'eventCode' => $eventCode,
+            'countryId' => $countryId,
+            'subTeam' => $subTeam,
+            'teamSize' => $teamSize,
+            'athleteIds' => $athleteIds,
+            'rowsById' => $rowsById,
+        ];
+    }
+
+    foreach ($byEvent as $eventCode => $eventGroups) {
+        safe_w_sql("UPDATE Events SET
+                EvFinEnds=IF(EvFinEnds=0, 4, EvFinEnds),
+                EvFinArrows=IF(EvFinArrows=0, IF(EvMixedTeam=1, 4, 6), EvFinArrows),
+                EvFinSO=IF(EvFinSO=0, IF(EvMixedTeam=1, 2, 3), EvFinSO)
+            WHERE EvTournament=" . StrSafe_DB($toId) . " AND EvTeamEvent=1 AND EvCode=" . StrSafe_DB($eventCode));
+        safe_w_sql("DELETE FROM TeamFinals WHERE TfTournament=" . StrSafe_DB($toId) . " AND TfEvent=" . StrSafe_DB($eventCode));
+        safe_w_sql("DELETE FROM TeamFinComponent WHERE TfcTournament=" . StrSafe_DB($toId) . " AND TfcEvent=" . StrSafe_DB($eventCode));
+        safe_w_sql("DELETE FROM TeamComponent WHERE TcTournament=" . StrSafe_DB($toId) . " AND TcEvent=" . StrSafe_DB($eventCode) . " AND TcFinEvent=1");
+        safe_w_sql("DELETE FROM Teams WHERE TeTournament=" . StrSafe_DB($toId) . " AND TeEvent=" . StrSafe_DB($eventCode) . " AND TeFinEvent=1");
+
+        $rankRows = [];
+        foreach ($eventGroups as $group) {
+            $score = 0; $gold = 0; $xnine = 0; $hits = 0;
+            foreach ($group['athleteIds'] as $athleteId) {
+                $row = $group['rowsById'][$athleteId];
+                $score += $row['score'];
+                $gold += $row['gold'];
+                $xnine += $row['xnine'];
+                $hits += $row['hits'];
+            }
+            $group['score'] = $score;
+            $group['gold'] = $gold;
+            $group['xnine'] = $xnine;
+            $group['hits'] = $hits;
+            $rankRows[] = $group;
+        }
+
+        usort($rankRows, function ($a, $b) {
+            return [$b['score'], $b['gold'], $b['xnine'], $b['hits'], -$a['countryId'], -$a['subTeam']]
+                <=> [$a['score'], $a['gold'], $a['xnine'], $a['hits'], -$b['countryId'], -$b['subTeam']];
+        });
+
+        $rank = 1;
+        foreach ($rankRows as $group) {
+            safe_w_sql("REPLACE INTO Teams (TeCoId, TeSubTeam, TeEvent, TeTournament, TeFinEvent, TeScore, TeGold, TeXnine, TeFinal, TeHits, TeRank, TeIsValidTeam, TeTimeStamp)
+                VALUES (" . StrSafe_DB($group['countryId']) . ", " . StrSafe_DB($group['subTeam']) . ", " . StrSafe_DB($eventCode) . ", " . StrSafe_DB($toId) . ", 1, " . StrSafe_DB($group['score']) . ", " . StrSafe_DB($group['gold']) . ", " . StrSafe_DB($group['xnine']) . ", 0, " . StrSafe_DB($group['hits']) . ", " . StrSafe_DB($rank) . ", " . (count($group['athleteIds']) >= $group['teamSize'] ? 1 : 0) . ", NOW())");
+
+            $values = [];
+            foreach ($group['athleteIds'] as $index => $athleteId) {
+                $values[] = "(" . StrSafe_DB($group['countryId']) . ", " . StrSafe_DB($group['subTeam']) . ", " . StrSafe_DB($toId) . ", " . StrSafe_DB($eventCode) . ", 1, " . StrSafe_DB($athleteId) . ", " . StrSafe_DB($index + 1) . ")";
+            }
+            if (count($values) > 0) {
+                safe_w_sql("REPLACE INTO TeamComponent (TcCoId, TcSubTeam, TcTournament, TcEvent, TcFinEvent, TcId, TcOrder) VALUES " . implode(',', $values));
+                safe_w_sql("REPLACE INTO TeamFinComponent (TfcCoId, TfcSubTeam, TfcTournament, TfcEvent, TfcId, TfcOrder, TfcTimeStamp)
+                    SELECT TcCoId, TcSubTeam, TcTournament, TcEvent, TcId, TcOrder, NOW()
+                    FROM TeamComponent
+                    WHERE TcTournament=" . StrSafe_DB($toId) . " AND TcEvent=" . StrSafe_DB($eventCode) . " AND TcCoId=" . StrSafe_DB($group['countryId']) . " AND TcSubTeam=" . StrSafe_DB($group['subTeam']) . " AND TcFinEvent=1");
+            }
+            $rank++;
+        }
+    }
 }
 
 function normalize_target($letter) {

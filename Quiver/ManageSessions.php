@@ -15,9 +15,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($input['action'] ?? '') === 'set')
         $apt = min(4, max(1, intval($s['archersPerTarget'] ?? 3)));
         $date = trim($s['date'] ?? '');
         $start = trim($s['startTime'] ?? '');
+        $duration = max(0, intval($s['duration'] ?? 120));
+        $startDt = $date && $start ? "$date $start:00" : date('Y-m-d H:i:s');
+        $endDt = date('Y-m-d H:i:s', strtotime($startDt) + ($duration * 60));
         safe_w_sql("INSERT INTO Session (SesTournament, SesOrder, SesType, SesName, SesTar4Session, SesAth4Target, SesDtStart, SesDtEnd)
-            VALUES ($toId, $order, 'Q', " . StrSafe_DB($name) . ", $targets, $apt, " . StrSafe_DB($date && $start ? "$date $start:00" : null) . ", NULL)
-            ON DUPLICATE KEY UPDATE SesName=VALUES(SesName), SesTar4Session=VALUES(SesTar4Session), SesAth4Target=VALUES(SesAth4Target), SesDtStart=VALUES(SesDtStart)");
+            VALUES ($toId, $order, 'Q', " . StrSafe_DB($name) . ", $targets, $apt, " . StrSafe_DB($startDt) . ", " . StrSafe_DB($endDt) . ")
+            ON DUPLICATE KEY UPDATE SesName=VALUES(SesName), SesTar4Session=VALUES(SesTar4Session), SesAth4Target=VALUES(SesAth4Target), SesDtStart=VALUES(SesDtStart), SesDtEnd=VALUES(SesDtEnd)");
     }
 }
 
